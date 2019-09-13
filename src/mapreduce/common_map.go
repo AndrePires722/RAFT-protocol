@@ -18,7 +18,6 @@ func doMap(
 	nReduce int, // the number of reduce task that will be run ("R" in the paper)
 	mapF func(file string, contents string) []KeyValue,
 ) {
-	
 	//Read the file to get contents
 	fileContents, _ := ioutil.ReadFile(inFile)
     //check(err)
@@ -41,13 +40,13 @@ func doMap(
 	for i:=0;i<nReduce;i++{
 		emptyFile, e := os.Create(names[i])
 		if e != nil {
-			//fmt.Printf("create error: %v",e)
+			fmt.Printf("MAP ERR: %v\n",e)
 		}
 		enc := json.NewEncoder(emptyFile)
 		
 			err := enc.Encode(&partition[i])
 			if(err!=nil){
-				fmt.Println(err)
+				fmt.Printf("MAP ERR: %v\n",err)
 			}
 		
 		emptyFile.Close()
@@ -55,6 +54,7 @@ func doMap(
 	
 		
 	}
+	
 	
 	
 	

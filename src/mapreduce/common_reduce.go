@@ -1,7 +1,6 @@
 package mapreduce
 
 import (
-	"fmt"
 	"encoding/json"
 	"io/ioutil"
 	"os"
@@ -19,7 +18,7 @@ func doReduce(
 	nMap int, // the number of map tasks that were run ("M" in the paper)
 	reduceF func(key string, values []string) string,
 ) {
-	fmt.Println("Im in doReduce")
+	
 	
 	result := make(map[string]([]string))
 	

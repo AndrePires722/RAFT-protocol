@@ -1,11 +1,17 @@
 package mapreduce
 
-import "fmt"
+import (
+	
+	"fmt"
+)
 
 // schedule starts and waits for all tasks in the given phase (Map or Reduce).
 func (mr *Master) schedule(phase jobPhase) {
+	
 	var ntasks int
 	var nios int // number of inputs (for reduce) or outputs (for map)
+	
+	
 	switch phase {
 	case mapPhase:
 		ntasks = len(mr.files)
@@ -14,9 +20,9 @@ func (mr *Master) schedule(phase jobPhase) {
 		ntasks = mr.nReduce
 		nios = len(mr.files)
 	}
-
+	
 	fmt.Printf("Schedule: %v %v tasks (%d I/Os)\n", ntasks, phase, nios)
-
+	
 	// All ntasks tasks have to be scheduled on workers, and only once all of
 	// them have been completed successfully should the function return.
 	// Remember that workers may fail, and that any given worker may finish
@@ -24,5 +30,43 @@ func (mr *Master) schedule(phase jobPhase) {
 	//
 	// TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
 	//
-	fmt.Printf("Schedule: %v phase done\n", phase)
+	
+	
+	for i:= 0;i<ntasks;i++{
+		worker := <- mr.registerChannel
+		
+		fmt.Printf("TASK NUMBER %v\n",i)
+		fmt.Println("found a new worker:    ")
+		fmt.Println(worker)
+		ch := ShutdownReply{}
+		args := DoTaskArgs{mr.jobName,mr.files[i],phase,i,nios}
+		result := call(worker, "Worker.DoTask", args, &ch)
+		if(!result){
+			fmt.Println("FAILED")
+			i--
+		}else{
+			fmt.Println("SUCC")
+		}
+		
+		register := RegisterArgs{worker}
+		result = call(mr.address,"Master.Register",register,&ch)
+		if(!result){
+			fmt.Println("REG FAILED")
+			i--
+		}else{
+			fmt.Println("REG SUCC")
+		}
+		
+	}
+
+	
+	
+	
+	
+
+
+	
+	return
 }
+
+
