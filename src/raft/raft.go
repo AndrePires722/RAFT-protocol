@@ -17,8 +17,12 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "labrpc"
+import (
+	"sync"
+	"labrpc"
+	"fmt"
+	"time"
+)
 
 // import "bytes"
 // import "encoding/gob"
@@ -37,6 +41,10 @@ type ApplyMsg struct {
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
 
+
+type LogMessage struct {
+	Msg string
+}
 //
 // A Go object implementing a single Raft peer.
 //
@@ -46,6 +54,27 @@ type Raft struct {
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 
+	currentTerm int
+	
+	votedFor int
+	
+	log []LogMessage
+	
+	commitIndex int
+	
+	lastApplied int
+	
+	nextIndex []int
+	
+	matchIndex []int
+	
+	leader bool
+	candidate bool
+	
+	timeOut time.Duration
+	lastPing time.Time
+	
+	dead bool
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -55,9 +84,13 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
+	
 	var term int
 	var isleader bool
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term = rf.currentTerm
+	isleader = rf.leader
 	// Your code here (2A).
 	return term, isleader
 }
@@ -94,14 +127,40 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 
+// used for heartbeat
+type AppendEntriesArgs struct {
+	Term int
+	ID int
+}
+type AppendEntriesReply struct {
+	Term int
+	Success bool
+}
 
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
+	rf.lastPing = time.Now()
+	fmt.Printf("%v got a ping from %v, with term of %v   @  %v\n",rf.me,args.ID,args.Term,rf.lastPing)
+	
+	
+	if(args.Term>rf.currentTerm){
+		rf.leader = false
+		rf.candidate = false
+		rf.currentTerm = args.Term
+	}
+	//fmt.Printf("%v Got a ping!\n",rf.me)
+	
+}
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term int
+	CandidateId int
+	LastLogIndex int
+	LastLogTerm LogMessage
 }
 
 //
@@ -110,6 +169,9 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	
+	Term int
+	VoteGranted bool
 }
 
 //
@@ -117,6 +179,36 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	
+	
+	fmt.Printf("%v is considering the vote for %v\n",rf.me,args.CandidateId)
+	
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	
+	if(args.Term > rf.currentTerm){
+		rf.currentTerm = args.Term
+		rf.leader = false
+		rf.candidate = false
+	}
+	
+	if(args.Term < rf.currentTerm){
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+	
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) &&
+		(args.LastLogIndex >= rf.commitIndex){
+			
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = true
+		rf.leader = false
+		rf.candidate = false
+		return
+	}
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
 }
 
 //
@@ -148,11 +240,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 //
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+func sendRequestVote(server *labrpc.ClientEnd, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	fmt.Println("sendvote")
+	ok := server.Call("Raft.RequestVote", args, reply)
+	fmt.Println("sendvote done")
 	return ok
 }
 
+func sendAppendEntries(server *labrpc.ClientEnd, args *AppendEntriesArgs,reply *AppendEntriesReply) bool {
+	ok := server.Call("Raft.AppendEntries",args,reply)
+	return ok
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -178,14 +276,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-//
-// the tester calls Kill() when a Raft instance won't
-// be needed again. you are not required to do anything
-// in Kill(), but it might be convenient to (for example)
-// turn off debug output from this instance.
-//
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+	
+	
+	fmt.Printf("killing %v\n",rf.me)
+	fmt.Println(rf.GetState())
+	
+	rf.leader = false
+	rf.candidate = false
+	rf.dead = true
 }
 
 //
@@ -205,12 +305,126 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	
+	//fmt.Println(me)
 
 	// Your initialization code here (2A, 2B, 2C).
-
+	
+	rf.currentTerm = 0
+	
+	rf.votedFor = -1
+	
+	rf.log = make([]LogMessage,0)
+	
+	rf.commitIndex = 0
+	
+	rf.lastApplied = 0
+	
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
+	
+	rf.timeOut = time.Duration(300 + me*800)*time.Millisecond
+	
+	
+	rf.lastPing = time.Now()
+	
+	go CheckForBeat(rf)
 
 	return rf
+}
+
+func CheckForBeat(rf *Raft){
+	
+	if(rf.leader||rf.candidate||rf.dead){
+		return
+	}
+	
+
+	time.Sleep(rf.timeOut)
+	
+	
+	if(time.Now().After(rf.lastPing.Add(rf.timeOut))){
+			fmt.Printf("%v thinks time has expired, time: %v, lastPing: %v, timeout: %v\n",rf.me,time.Now(),rf.lastPing,rf.timeOut)
+			//election time
+			rf.candidate = true
+			DoElection(rf)
+	}else{
+			//no need for election
+			
+	}
+	
+	
+	if(!rf.leader){
+		defer CheckForBeat(rf)
+	}
+	
+	
+	
+}
+
+
+func DoElection(rf *Raft){
+	
+	if(rf.leader || !rf.candidate ||rf.dead){
+		return
+	}
+	
+	
+	
+	fmt.Printf("ELECTION TIME SAYS %v\n",rf.me)
+	args := RequestVoteArgs{rf.currentTerm,rf.me,0,LogMessage{}}
+	reply := RequestVoteReply{}
+	rf.currentTerm++
+	fmt.Printf("Current term is %v\n",rf.currentTerm)
+	votes := 1
+	for i,e := range(rf.peers) {
+		if(i==rf.me){continue}
+		fmt.Printf("%v IS SENDING REQUEST TO %v\n",rf.me,i)
+		ok := sendRequestVote(e,&args,&reply)
+		if(ok){
+			if(reply.VoteGranted){
+				fmt.Printf("(%v) : Response recieved, ans is %v\n",rf.me,reply.VoteGranted)
+				votes++
+			}
+		}else{
+				fmt.Println("TIMEOUT!")
+		}
+	}
+	fmt.Printf("ELECTION RESULTS: %v\n",votes)
+	
+	//If you've been elected
+	if(rf.candidate&& votes>=(len(rf.peers)/2+1)){
+		fmt.Printf("%v IS ELECTED\n",rf.me)
+		rf.leader = true
+		fmt.Printf(">>>>%v has started beating\n",rf.me)
+		go Heartbeat(rf)
+	}else{
+		fmt.Printf("However, %v is not elected!\n",rf.me)
+	}
+	
+	fmt.Println("-----------")
+	
+	
+}
+
+func Heartbeat(rf *Raft){
+	
+	if(!rf.leader || rf.dead){
+		fmt.Printf("<<<<%v has stopped beating!\n",rf.me)
+		return
+	}
+	
+	args := AppendEntriesArgs{rf.currentTerm,rf.me}
+	reply := AppendEntriesReply{}
+	
+	for i,e := range(rf.peers){
+		if(i==rf.me){continue}
+		go sendAppendEntries(e,&args,&reply)
+	}
+	
+	
+	
+	defer Heartbeat(rf)
+	
+	time.Sleep(100*time.Millisecond)
 }
