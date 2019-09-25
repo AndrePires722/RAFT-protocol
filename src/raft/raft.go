@@ -167,6 +167,8 @@ type RequestVoteArgs struct {
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 //
+
+
 type RequestVoteReply struct {
 	// Your data here (2A).
 	
@@ -183,8 +185,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	
 	fmt.Printf("%v is considering the vote for %v\n",rf.me,args.CandidateId)
 	
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+
 	
 	if(args.Term > rf.currentTerm){
 		rf.currentTerm = args.Term
