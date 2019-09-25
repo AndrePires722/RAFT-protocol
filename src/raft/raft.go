@@ -20,7 +20,7 @@ package raft
 import (
 	"sync"
 	"labrpc"
-	"fmt"
+	//"fmt"
 	"time"
 )
 
@@ -140,7 +140,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 	rf.lastPing = time.Now()
-	fmt.Printf("%v got a ping from %v, with term of %v   @  %v\n",rf.me,args.ID,args.Term,rf.lastPing)
+	//debug("%v got a ping from %v, with term of %v   @  %v\n",rf.me,args.ID,args.Term,rf.lastPing)
 	
 	
 	if(args.Term>rf.currentTerm){
@@ -183,9 +183,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	
 	
-	fmt.Printf("%v is considering the vote for %v\n",rf.me,args.CandidateId)
+	//fmt.Printf("%v is considering the vote for %v at term %v\n",rf.me,args.CandidateId,args.Term)
 	
-
+	//rf.mu.Lock()
+	//defer rf.mu.Unlock()
 	
 	if(args.Term > rf.currentTerm){
 		rf.currentTerm = args.Term
@@ -242,9 +243,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func sendRequestVote(server *labrpc.ClientEnd, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	fmt.Println("sendvote")
+	//fmt.Println("sendvote")
 	ok := server.Call("Raft.RequestVote", args, reply)
-	fmt.Println("sendvote done")
+	//fmt.Println("sendvote done")
 	return ok
 }
 
@@ -281,8 +282,8 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 	
 	
-	fmt.Printf("killing %v\n",rf.me)
-	fmt.Println(rf.GetState())
+	//fmt.Printf("killing %v\n",rf.me)
+	//fmt.Println(rf.GetState())
 	
 	rf.leader = false
 	rf.candidate = false
@@ -345,7 +346,7 @@ func CheckForBeat(rf *Raft){
 	
 	
 	if(time.Now().After(rf.lastPing.Add(rf.timeOut))){
-			fmt.Printf("%v thinks time has expired, time: %v, lastPing: %v, timeout: %v\n",rf.me,time.Now(),rf.lastPing,rf.timeOut)
+			//fmt.Printf("%v thinks time has expired, time: %v, lastPing: %v, timeout: %v\n",rf.me,time.Now(),rf.lastPing,rf.timeOut)
 			//election time
 			rf.candidate = true
 			DoElection(rf)
@@ -365,45 +366,70 @@ func CheckForBeat(rf *Raft){
 
 
 func DoElection(rf *Raft){
-	
+	//rf.mu.Lock()
 	if(rf.leader || !rf.candidate ||rf.dead){
+		//rf.mu.Unlock()
 		return
 	}
 	
 	
 	
-	fmt.Printf("ELECTION TIME SAYS %v\n",rf.me)
-	args := RequestVoteArgs{rf.currentTerm,rf.me,0,LogMessage{}}
-	reply := RequestVoteReply{}
 	rf.currentTerm++
-	fmt.Printf("Current term is %v\n",rf.currentTerm)
+	//fmt.Printf("ELECTION TIME SAYS %v\n",rf.me)
+	args := RequestVoteArgs{rf.currentTerm,rf.me,0,LogMessage{}}
+	reply :=  make([]RequestVoteReply,3)
+	
+	//fmt.Printf("Current term is %v\n",rf.currentTerm)
+	
+	
 	votes := 1
+	totalVotes := 1
+	
+	var votesMu sync.Mutex
+	
 	for i,e := range(rf.peers) {
 		if(i==rf.me){continue}
-		fmt.Printf("%v IS SENDING REQUEST TO %v\n",rf.me,i)
-		ok := sendRequestVote(e,&args,&reply)
-		if(ok){
-			if(reply.VoteGranted){
-				fmt.Printf("(%v) : Response recieved, ans is %v\n",rf.me,reply.VoteGranted)
+		//fmt.Printf("%v IS SENDING REQUEST TO %v\n",rf.me,i)
+		go func(index int,e2 *labrpc.ClientEnd){
+			ok := sendRequestVote(e2,&args,&reply[index])
+			if(ok){
+			if(reply[index].VoteGranted){
+				//fmt.Printf("(%v) : Response recieved, ans is %v\n",rf.me,reply[index].VoteGranted)
+				votesMu.Lock()
 				votes++
+				totalVotes++
+				votesMu.Unlock()
 			}
 		}else{
-				fmt.Println("TIMEOUT!")
+				//fmt.Println("TIMEOUT!")
+				votesMu.Lock()
+				totalVotes++
+				votesMu.Unlock()
 		}
+		}(i,e)
+		
+		
 	}
-	fmt.Printf("ELECTION RESULTS: %v\n",votes)
-	
+	//rf.mu.Unlock()
+	for(votes<(len(rf.peers)/2+1) && totalVotes!=len(rf.peers)){
+		
+	}
+	//fmt.Printf("ELECTION RESULTS: %v\n",votes)
+	//rf.mu.Lock()
 	//If you've been elected
 	if(rf.candidate&& votes>=(len(rf.peers)/2+1)){
-		fmt.Printf("%v IS ELECTED\n",rf.me)
+		//fmt.Printf("%v IS ELECTED\n",rf.me)
 		rf.leader = true
-		fmt.Printf(">>>>%v has started beating\n",rf.me)
+		//fmt.Printf(">>>>%v has started beating\n",rf.me)
 		go Heartbeat(rf)
 	}else{
-		fmt.Printf("However, %v is not elected!\n",rf.me)
+		//fmt.Printf("However, %v is not elected!\n",rf.me)
 	}
 	
-	fmt.Println("-----------")
+	//fmt.Println("-----------")
+	
+	for(totalVotes!=len(rf.peers)){}
+	//rf.mu.Unlock()
 	
 	
 }
@@ -411,7 +437,7 @@ func DoElection(rf *Raft){
 func Heartbeat(rf *Raft){
 	
 	if(!rf.leader || rf.dead){
-		fmt.Printf("<<<<%v has stopped beating!\n",rf.me)
+		//fmt.Printf("<<<<%v has stopped beating!\n",rf.me)
 		return
 	}
 	
