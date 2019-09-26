@@ -138,7 +138,8 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	rf.lastPing = time.Now()
 	//fmt.Printf("%v got a ping from %v, with term of %v   @  %v\n",rf.me,args.ID,args.Term,rf.lastPing)
 	
@@ -185,8 +186,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	
 	//fmt.Printf("%v is considering the vote for %v at term %v\n",rf.me,args.CandidateId,args.Term)
 	
-	//rf.mu.Lock()
-	//defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	
 	if(args.Term > rf.currentTerm){
 		rf.currentTerm = args.Term
@@ -284,7 +285,8 @@ func (rf *Raft) Kill() {
 	
 	//fmt.Printf("killing %v\n",rf.me)
 	//fmt.Println(rf.GetState())
-	
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	rf.leader = false
 	rf.candidate = false
 	rf.dead = true
@@ -336,38 +338,41 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 func CheckForBeat(rf *Raft){
 	
+	rf.mu.Lock()
 	if(rf.leader||rf.candidate||rf.dead){
+		rf.mu.Unlock()
 		return
 	}
-	
+	rf.mu.Unlock()
 
 	time.Sleep(rf.timeOut)
 	
-	
+	rf.mu.Lock()
 	if(time.Now().After(rf.lastPing.Add(rf.timeOut))){
 			//fmt.Printf("%v thinks time has expired, time: %v, lastPing: %v, timeout: %v\n",rf.me,time.Now(),rf.lastPing,rf.timeOut)
 			//election time
 			rf.candidate = true
+			rf.mu.Unlock()
 			DoElection(rf)
 	}else{
 			//no need for election
-			
+			rf.mu.Unlock()
 	}
 	
-	
+	rf.mu.Lock()
 	if(!rf.leader){
 		defer CheckForBeat(rf)
 	}
-	
+	rf.mu.Unlock()
 	
 	
 }
 
 
 func DoElection(rf *Raft){
-	//rf.mu.Lock()
+	rf.mu.Lock()
 	if(rf.leader || !rf.candidate ||rf.dead){
-		//rf.mu.Unlock()
+		rf.mu.Unlock()
 		return
 	}
 	
@@ -377,7 +382,7 @@ func DoElection(rf *Raft){
 	//fmt.Printf("ELECTION TIME SAYS %v\n",rf.me)
 	args := RequestVoteArgs{rf.currentTerm,rf.me,0,LogMessage{}}
 	reply :=  make([]RequestVoteReply,3)
-	
+	rf.mu.Unlock()
 	//fmt.Printf("Current term is %v\n",rf.currentTerm)
 	
 	
@@ -405,7 +410,7 @@ func DoElection(rf *Raft){
 				totalVotes++
 				votesMu.Unlock()
 			}
-			
+			rf.mu.Lock()
 			if(reply[index].Term > rf.currentTerm){
 				
 				rf.currentTerm = reply[index].Term
@@ -414,44 +419,69 @@ func DoElection(rf *Raft){
 				rf.candidate = false
 				
 			}
-			
+			rf.mu.Unlock()
 		}(i,e)
 		
 		
 	}
 	//rf.mu.Unlock()
-	for(votes<(len(rf.peers)/2+1) && totalVotes!=len(rf.peers)){
+	for(true){
+		votesMu.Lock()
+		if(votes<(len(rf.peers)/2+1) && totalVotes!=len(rf.peers)){
+				votesMu.Unlock()
+				continue
+		}else{
+				votesMu.Unlock()
+				break
+		}
 		
 	}
 	//fmt.Printf("ELECTION RESULTS: %v\n",votes)
-	//rf.mu.Lock()
+	rf.mu.Lock()
+	votesMu.Lock()
 	//If you've been elected
 	if(rf.candidate&& votes>=(len(rf.peers)/2+1)){
 		//fmt.Printf("%v IS ELECTED\n",rf.me)
 		rf.leader = true
 		//fmt.Printf(">>>>%v has started beating\n",rf.me)
+		rf.mu.Unlock()
+		votesMu.Unlock()
 		go Heartbeat(rf)
 	}else{
 		//fmt.Printf("However, %v is not elected!\n",rf.me)
+		rf.mu.Unlock()
+		votesMu.Unlock()
 	}
 	
 	//fmt.Println("-----------")
 	
-	for(totalVotes!=len(rf.peers)){}
+	for(true){
+		votesMu.Lock()
+		if(totalVotes!=len(rf.peers)){
+				votesMu.Unlock()
+				continue
+		}else{
+				votesMu.Unlock()
+				break
+		}
+		
+	}
 	//rf.mu.Unlock()
 	
 	
 }
 
 func Heartbeat(rf *Raft){
-	
+	rf.mu.Lock()
 	if(!rf.leader || rf.dead){
+		rf.mu.Unlock()
 		//fmt.Printf("<<<<%v has stopped beating!\n",rf.me)
 		return
 	}
 	
 	args := AppendEntriesArgs{rf.currentTerm,rf.me}
 	reply := make([]AppendEntriesReply,3)
+	rf.mu.Unlock()
 	
 	for i,e := range(rf.peers){
 		if(i==rf.me){continue}
@@ -459,6 +489,7 @@ func Heartbeat(rf *Raft){
 			
 			sendAppendEntries(e2,&args,&reply[index])
 			
+			rf.mu.Lock()
 			if(reply[index].Term > rf.currentTerm){
 				
 				rf.currentTerm = reply[index].Term
@@ -467,6 +498,7 @@ func Heartbeat(rf *Raft){
 				rf.candidate = false
 				
 			}
+			rf.mu.Unlock()
 			
 			
 		}(i,e)
