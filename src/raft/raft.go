@@ -140,7 +140,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 
 	rf.lastPing = time.Now()
-	//debug("%v got a ping from %v, with term of %v   @  %v\n",rf.me,args.ID,args.Term,rf.lastPing)
+	//fmt.Printf("%v got a ping from %v, with term of %v   @  %v\n",rf.me,args.ID,args.Term,rf.lastPing)
 	
 	
 	if(args.Term>rf.currentTerm){
@@ -327,7 +327,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	
 	rf.timeOut = time.Duration(300 + me*800)*time.Millisecond
 	
-	
 	rf.lastPing = time.Now()
 	
 	go CheckForBeat(rf)
@@ -400,12 +399,22 @@ func DoElection(rf *Raft){
 				totalVotes++
 				votesMu.Unlock()
 			}
-		}else{
+			}else{
 				//fmt.Println("TIMEOUT!")
 				votesMu.Lock()
 				totalVotes++
 				votesMu.Unlock()
-		}
+			}
+			
+			if(reply[index].Term > rf.currentTerm){
+				
+				rf.currentTerm = reply[index].Term
+				
+				rf.leader = false
+				rf.candidate = false
+				
+			}
+			
 		}(i,e)
 		
 		
@@ -442,11 +451,25 @@ func Heartbeat(rf *Raft){
 	}
 	
 	args := AppendEntriesArgs{rf.currentTerm,rf.me}
-	reply := AppendEntriesReply{}
+	reply := make([]AppendEntriesReply,3)
 	
 	for i,e := range(rf.peers){
 		if(i==rf.me){continue}
-		go sendAppendEntries(e,&args,&reply)
+		go func(index int,e2 *labrpc.ClientEnd){
+			
+			sendAppendEntries(e2,&args,&reply[index])
+			
+			if(reply[index].Term > rf.currentTerm){
+				
+				rf.currentTerm = reply[index].Term
+				
+				rf.leader = false
+				rf.candidate = false
+				
+			}
+			
+			
+		}(i,e)
 	}
 	
 	
