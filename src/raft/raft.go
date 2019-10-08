@@ -20,8 +20,9 @@ package raft
 import (
 	"sync"
 	"labrpc"
-	//"fmt"
+	"fmt"
 	"time"
+	
 )
 
 // import "bytes"
@@ -43,7 +44,8 @@ type ApplyMsg struct {
 
 
 type LogMessage struct {
-	Msg string
+	Command interface{}
+	Term int
 }
 //
 // A Go object implementing a single Raft peer.
@@ -54,6 +56,7 @@ type Raft struct {
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 
+	applyCh chan ApplyMsg
 	currentTerm int
 	
 	votedFor int
@@ -70,11 +73,12 @@ type Raft struct {
 	
 	leader bool
 	candidate bool
+	dead bool
 	
 	timeOut time.Duration
 	lastPing time.Time
 	
-	dead bool
+	
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -131,6 +135,10 @@ func (rf *Raft) readPersist(data []byte) {
 type AppendEntriesArgs struct {
 	Term int
 	ID int
+	PrevLogIndex int
+	PrevLogTerm int
+	Entries []LogMessage
+	LeaderCommit int
 }
 type AppendEntriesReply struct {
 	Term int
@@ -149,6 +157,59 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.candidate = false
 		rf.currentTerm = args.Term
 	}
+	
+	if(args.LeaderCommit>rf.commitIndex && rf.commitIndex<len(rf.log)){
+		
+		rf.commitIndex++
+		rf.applyCh <- ApplyMsg{rf.commitIndex,rf.log[rf.commitIndex-1].Command,false,nil}
+		fmt.Println("COMMITTED")
+		
+	}
+	
+	if(args.Entries==nil){
+		//fmt.Println("Looks like spam!")
+		return
+	}
+	
+	fmt.Printf("%v got an AppendEntry request from %v\n",rf.me,args.ID)
+	
+	//Clause 1
+	if(args.Term < rf.currentTerm){
+		fmt.Println("Fail C1")
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+	
+	//Clause 2
+	if(args.PrevLogIndex>len(rf.log) || (len(rf.log)>0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm)){
+		fmt.Println("Fail C2")
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}else if len(rf.log)>0 && rf.log[args.PrevLogIndex-1].Term != args.PrevLogTerm {
+		//Clause 3
+		fmt.Println("Fail C3")
+		rf.log = rf.log[:args.PrevLogIndex-1]
+	}
+	
+	
+	//Clause 4
+	rf.log = append(rf.log,args.Entries...)
+	
+	//Clause 5
+	if(args.LeaderCommit > rf.commitIndex){
+		if(args.LeaderCommit < len(rf.log)){
+			rf.commitIndex = args.LeaderCommit
+		} else {
+			rf.commitIndex = len(rf.log)
+		}
+	}
+	
+	reply.Success = true
+	reply.Term = rf.currentTerm
+	
+	fmt.Println(rf.log)
 	//fmt.Printf("%v Got a ping!\n",rf.me)
 	
 }
@@ -161,7 +222,7 @@ type RequestVoteArgs struct {
 	Term int
 	CandidateId int
 	LastLogIndex int
-	LastLogTerm LogMessage
+	LastLogTerm int
 }
 
 //
@@ -208,6 +269,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.leader = false
 		rf.candidate = false
+		rf.lastPing = time.Now()
 		return
 	}
 	reply.Term = rf.currentTerm
@@ -269,14 +331,54 @@ func sendAppendEntries(server *labrpc.ClientEnd, args *AppendEntriesArgs,reply *
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	
+
+	rf.mu.Lock()
+	if(rf.leader){
+		fmt.Printf("%v got a thing and is also a leader!\n",rf.me)
+		
+		var prevLogTerm int
+		if(len(rf.log)>0){
+			prevLogTerm = rf.log[len(rf.log)-1].Term
+		}else{
+			prevLogTerm = 0
+		}
+		msg := make([]LogMessage,1)
+		msg[0] = LogMessage{command,rf.currentTerm}
+		args := AppendEntriesArgs{rf.currentTerm,rf.me,len(rf.log),prevLogTerm,msg,rf.commitIndex}
+		rf.log = append(rf.log,LogMessage{command,rf.currentTerm})
+		rf.commitIndex++
+		rf.applyCh <- ApplyMsg{rf.commitIndex,command,false,nil}
+		rf.mu.Unlock()
+		for i,e := range(rf.peers){
+			if(i!=rf.me){
+				go func(index int,e2 *labrpc.ClientEnd){
+					
+					reply := AppendEntriesReply{}
+					ok := sendAppendEntries(e2,&args,&reply)
+					if(ok){
+						fmt.Printf("Call to %v went through ok! Response was: %v\n",index,reply.Success)
+						
+					}else{
+						fmt.Printf("Call to %v Timed out\n",index)
+					}
+				}(i,e)
+			}
+		}
+	}else{
+		rf.mu.Unlock()
+		//fmt.Printf("but %v isnt a leader.\n",rf.me)
+		return rf.commitIndex,rf.currentTerm,false
+	}
+	//fmt.Println("Ret")
+	return rf.commitIndex,rf.currentTerm,true
+	
+	
 
 	// Your code here (2B).
 
 
-	return index, term, isLeader
+	//return index, term, isLeader
 }
 
 func (rf *Raft) Kill() {
@@ -304,13 +406,14 @@ func (rf *Raft) Kill() {
 // for any long-running work.
 //
 func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	persister *Persister, applyCh2 chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh2
 	
-	//fmt.Println(me)
+	fmt.Printf("Initializing %v\n",me)
 
 	// Your initialization code here (2A, 2B, 2C).
 	
@@ -376,12 +479,18 @@ func DoElection(rf *Raft){
 		return
 	}
 	
-	
+	rf.lastPing = time.Now()
 	
 	rf.currentTerm++
 	//fmt.Printf("ELECTION TIME SAYS %v\n",rf.me)
-	args := RequestVoteArgs{rf.currentTerm,rf.me,0,LogMessage{}}
-	reply :=  make([]RequestVoteReply,3)
+	var prevLogTerm int
+	if(len(rf.log)>0){
+		prevLogTerm = rf.log[len(rf.log)-1].Term
+	}else{
+		prevLogTerm = 0
+	}
+	args := RequestVoteArgs{rf.currentTerm,rf.me,0,prevLogTerm}
+	reply :=  make([]RequestVoteReply,len(rf.peers))
 	rf.mu.Unlock()
 	//fmt.Printf("Current term is %v\n",rf.currentTerm)
 	
@@ -478,9 +587,14 @@ func Heartbeat(rf *Raft){
 		//fmt.Printf("<<<<%v has stopped beating!\n",rf.me)
 		return
 	}
-	
-	args := AppendEntriesArgs{rf.currentTerm,rf.me}
-	reply := make([]AppendEntriesReply,3)
+	var prevLogTerm int
+	if(len(rf.log)>0){
+		prevLogTerm = rf.log[len(rf.log)-1].Term
+	}else{
+		prevLogTerm = 0
+	}
+	args := AppendEntriesArgs{rf.currentTerm,rf.me,len(rf.log),prevLogTerm,nil,rf.commitIndex}
+	reply := make([]AppendEntriesReply,len(rf.peers))
 	rf.mu.Unlock()
 	
 	for i,e := range(rf.peers){
