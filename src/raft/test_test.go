@@ -478,7 +478,7 @@ loop:
 		}
 
 		if total2-total1 > (iters+1+3)*3 {
-			t.Fatalf("too many RPCs (%v) for %v entries\n", total2-total1, iters)
+			t.Fatalf("too many RPCs (%v) for %v entries (has to be >%v\n", total2-total1, iters,(iters+1+3)*3)
 		}
 
 		success = true
